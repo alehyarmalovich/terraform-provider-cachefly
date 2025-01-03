@@ -30,9 +30,10 @@ func Provider() *schema.Provider {
 			"cachefly_service": resourceCacheflyService(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
-			"cachefly_account":  dataSourceCacheflyAccount(),
-			"cachefly_services": dataSourceCacheflyServices(),
-			"cachefly_origins":  dataSourceCacheflyOrigins(),
+			"cachefly_account":         dataSourceCacheflyAccount(),
+			"cachefly_services":        dataSourceCacheflyServices(),
+			"cachefly_origins":         dataSourceCacheflyOrigins(),
+			"cachefly_service_domains": dataSourceCacheflyServiceDomains(),
 		},
 		ConfigureContextFunc: providerConfigure,
 	}
