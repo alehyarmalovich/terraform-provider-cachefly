@@ -72,6 +72,10 @@ func resourceCacheflyService() *schema.Resource {
 		UpdateContext: resourceCacheflyServiceUpdate,
 		DeleteContext: resourceCacheflyServiceDelete,
 
+		Importer: &schema.ResourceImporter{
+			StateContext: resourceCacheflyServiceImport,
+		},
+
 		Schema: map[string]*schema.Schema{
 			"name": {
 				Type:        schema.TypeString,
@@ -804,4 +808,27 @@ func getServiceOptions(client *CacheFlyClient, serviceID string) (ReverseProxy, 
 	}
 
 	return options.ReverseProxy, options.ErrorTTL, options.HostnamePassThrough, nil
+}
+
+func resourceCacheflyServiceImport(ctx context.Context, d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
+	client := meta.(*CacheFlyClient)
+
+	serviceID := d.Id()
+
+	service, err := fetchServiceDetails(client, serviceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch service details for import: %w", err)
+	}
+
+	if service == nil {
+		return nil, fmt.Errorf("service with ID %s not found", serviceID)
+	}
+
+	d.Set("name", service.Name)
+	d.Set("unique_name", service.UniqueName)
+	d.Set("description", service.Description)
+	d.Set("auto_ssl", service.AutoSsl)
+	d.Set("status", service.Status)
+
+	return []*schema.ResourceData{d}, nil
 }
