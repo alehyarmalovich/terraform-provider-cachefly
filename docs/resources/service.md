@@ -29,6 +29,7 @@ description: |-
 - `error_ttl` (Block List, Max: 1) (see [below for nested schema](#nestedblock--error_ttl))
 - `hostname_pass_through` (Boolean) Enable or disable hostname pass-through (Edge to Origin).
 - `reverse_proxy` (Block List, Max: 1) (see [below for nested schema](#nestedblock--reverse_proxy))
+- `shared_origin_shield` (Block List, Max: 1) Shared Origin Shield configuration. (see [below for nested schema](#nestedblock--shared_origin_shield))
 
 ### Read-Only
 
@@ -72,3 +73,12 @@ Optional:
 - `secret_key` (String, Sensitive) The secret key for the OBJECT_STORAGE mode. Required for OBJECT_STORAGE.
 - `ttl` (Number) Time-to-live for cached content in seconds. Range: 1 to 7776000. Required for all modes.
 - `use_robots_txt` (Boolean) Specifies whether to respect the robots.txt file. Required for all modes.
+
+
+<a id="nestedblock--shared_origin_shield"></a>
+### Nested Schema for `shared_origin_shield`
+
+Optional:
+
+- `enabled` (Boolean) Indicates if the Shared Origin Shield is enabled.
+- `value` (String) The value for the Shared Origin Shield (e.g., region).

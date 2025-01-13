@@ -56,13 +56,19 @@ type ReverseProxy struct {
 
 type ErrorTTL struct {
 	Enabled bool `json:"enabled"`
-	Value   *int `json:"value,omitempty"` // Pointer to distinguish between unset and zero
+	Value   *int `json:"value,omitempty"`
 }
 
 type ServiceOptions struct {
-	ReverseProxy        ReverseProxy `json:"reverseProxy"`
-	ErrorTTL            *ErrorTTL    `json:"error_ttl"`
-	HostnamePassThrough bool         `json:"edgetoorigin"`
+	ReverseProxy        ReverseProxy  `json:"reverseProxy"`
+	ErrorTTL            *ErrorTTL     `json:"error_ttl"`
+	SharedShield        *SharedShield `json:"sharedshield"`
+	HostnamePassThrough bool          `json:"edgetoorigin"`
+}
+
+type SharedShield struct {
+	Enabled bool    `json:"enabled"`
+	Value   *string `json:"value,omitempty"`
 }
 
 func resourceCacheflyService() *schema.Resource {
@@ -174,6 +180,26 @@ func resourceCacheflyService() *schema.Resource {
 				Optional:    true,
 				Default:     false,
 				Description: "Enable or disable hostname pass-through (Edge to Origin).",
+			},
+			"shared_origin_shield": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: "Shared Origin Shield configuration.",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"enabled": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Description: "Indicates if the Shared Origin Shield is enabled.",
+						},
+						"value": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "The value for the Shared Origin Shield (e.g., region).",
+						},
+					},
+				},
 			},
 		},
 	}
@@ -363,6 +389,33 @@ func resourceCacheflyServiceCreate(ctx context.Context, d *schema.ResourceData, 
 		}
 	}
 
+	// Configure shared_origin_shield if provided
+	if v, ok := d.GetOk("shared_origin_shield"); ok {
+		sharedShieldConfig := v.([]interface{})[0].(map[string]interface{})
+		sharedShield := map[string]interface{}{
+			"enabled": sharedShieldConfig["enabled"].(bool),
+		}
+		if value, exists := sharedShieldConfig["value"]; exists && value != "" {
+			sharedShield["value"] = value.(string)
+		}
+
+		payload := map[string]interface{}{
+			"sharedshield": sharedShield,
+		}
+
+		url := fmt.Sprintf("%s/api/2.6/services/%s/options", client.APIURL, d.Id())
+		resp, err := makeRequestWithRetry(client, "PUT", url, payload)
+		if err != nil {
+			return diag.Errorf("failed to configure SharedShield: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return diag.Errorf("API error while configuring SharedShield: %s", string(body))
+		}
+	}
+
 	if err := manageAdditionalConfigurations(client, d, createdService.ID); err != nil {
 		return diag.FromErr(err)
 	}
@@ -389,7 +442,7 @@ func resourceCacheflyServiceRead(ctx context.Context, d *schema.ResourceData, me
 	d.Set("auto_ssl", service.AutoSsl)
 	d.Set("status", service.Status)
 
-	reverseProxy, errorTTL, hostnamePassThrough, err := getServiceOptions(client, d.Id())
+	reverseProxy, errorTTL, hostnamePassThrough, sharedShield, err := getServiceOptions(client, d.Id())
 	if err != nil {
 		return diag.Errorf("failed to fetch service options: %v", err)
 	}
@@ -423,8 +476,19 @@ func resourceCacheflyServiceRead(ctx context.Context, d *schema.ResourceData, me
 		} else {
 			d.Set("error_ttl", nil)
 		}
+	}
+
+	// Set shared_origin_shield only if present in API
+	if sharedShield != nil {
+		sharedShieldMap := map[string]interface{}{
+			"enabled": sharedShield.Enabled,
+		}
+		if sharedShield.Value != nil {
+			sharedShieldMap["value"] = *sharedShield.Value
+		}
+		d.Set("shared_origin_shield", []interface{}{sharedShieldMap})
 	} else {
-		fmt.Println("Ignoring error_ttl as it is not defined in Terraform configuration.")
+		d.Set("shared_origin_shield", nil)
 	}
 
 	d.Set("hostname_pass_through", hostnamePassThrough)
@@ -472,7 +536,7 @@ func resourceCacheflyServiceUpdate(ctx context.Context, d *schema.ResourceData, 
 	}
 
 	// Fetch current service options
-	reverseProxy, _, _, err := getServiceOptions(client, serviceID)
+	reverseProxy, _, _, _, err := getServiceOptions(client, serviceID)
 	if err != nil {
 		return diag.Errorf("failed to fetch service options: %v", err)
 	}
@@ -597,6 +661,55 @@ func resourceCacheflyServiceUpdate(ctx context.Context, d *schema.ResourceData, 
 		}
 	}
 
+	if d.HasChange("shared_origin_shield") {
+		_, new := d.GetChange("shared_origin_shield")
+
+		// Handle removal of the block
+		if new == nil || len(new.([]interface{})) == 0 {
+			payload := map[string]interface{}{
+				"sharedshield": map[string]interface{}{
+					"enabled": false,
+				},
+			}
+
+			url := fmt.Sprintf("%s/api/2.6/services/%s/options", client.APIURL, d.Id())
+			resp, err := makeRequestWithRetry(client, "PUT", url, payload)
+			if err != nil {
+				return diag.Errorf("failed to disable shared_origin_shield: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				return diag.Errorf("API error while disabling shared_origin_shield: %s", string(body))
+			}
+		} else if len(new.([]interface{})) > 0 {
+			// Handle updates to the block
+			sharedShieldConfig := new.([]interface{})[0].(map[string]interface{})
+			payload := map[string]interface{}{
+				"sharedshield": map[string]interface{}{
+					"enabled": sharedShieldConfig["enabled"].(bool),
+				},
+			}
+
+			if value, ok := sharedShieldConfig["value"]; ok {
+				payload["sharedshield"].(map[string]interface{})["value"] = value.(string)
+			}
+
+			url := fmt.Sprintf("%s/api/2.6/services/%s/options", client.APIURL, d.Id())
+			resp, err := makeRequestWithRetry(client, "PUT", url, payload)
+			if err != nil {
+				return diag.Errorf("failed to update shared_origin_shield: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				return diag.Errorf("API error while updating shared_origin_shield: %s", string(body))
+			}
+		}
+	}
+
 	diags = append(diags, resourceCacheflyServiceRead(ctx, d, meta)...)
 
 	return diags
@@ -697,7 +810,7 @@ func configureReverseProxy(client *CacheFlyClient, serviceID string, reverseProx
 	url := fmt.Sprintf("%s/api/2.6/services/%s/options", client.APIURL, serviceID)
 
 	// Fetching the current state of the reverse proxy
-	currentState, _, _, err := getServiceOptions(client, serviceID)
+	currentState, _, _, _, err := getServiceOptions(client, serviceID)
 	if err != nil {
 		return fmt.Errorf("failed to fetch current reverse proxy state: %w", err)
 	}
@@ -784,30 +897,38 @@ func configureReverseProxy(client *CacheFlyClient, serviceID string, reverseProx
 	return nil
 }
 
-func getServiceOptions(client *CacheFlyClient, serviceID string) (ReverseProxy, *ErrorTTL, bool, error) {
+func getServiceOptions(client *CacheFlyClient, serviceID string) (ReverseProxy, *ErrorTTL, bool, *SharedShield, error) {
 	url := fmt.Sprintf("%s/api/2.6/services/%s/options", client.APIURL, serviceID)
 
 	resp, err := makeRequestWithRetry(client, "GET", url, nil)
 	if err != nil {
-		return ReverseProxy{}, nil, false, fmt.Errorf("failed to fetch service options: %w", err)
+		return ReverseProxy{}, nil, false, nil, fmt.Errorf("failed to fetch service options: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return ReverseProxy{}, nil, false, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, string(body))
+		return ReverseProxy{}, nil, false, nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, string(body))
 	}
 
 	var options ServiceOptions
 	if err := json.NewDecoder(resp.Body).Decode(&options); err != nil {
-		return ReverseProxy{}, nil, false, fmt.Errorf("failed to decode response: %w", err)
+		return ReverseProxy{}, nil, false, nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	var sharedShield *SharedShield
+	if options.SharedShield != nil {
+		sharedShield = &SharedShield{
+			Enabled: options.SharedShield.Enabled,
+			Value:   options.SharedShield.Value,
+		}
 	}
 
 	if options.ErrorTTL != nil && options.ErrorTTL.Value == nil {
 		options.ErrorTTL = nil
 	}
 
-	return options.ReverseProxy, options.ErrorTTL, options.HostnamePassThrough, nil
+	return options.ReverseProxy, options.ErrorTTL, options.HostnamePassThrough, sharedShield, nil
 }
 
 func resourceCacheflyServiceImport(ctx context.Context, d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
